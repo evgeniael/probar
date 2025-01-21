@@ -1,4 +1,5 @@
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, AutoModelForCausalLM
+from transformers import RobertaTokenizer, RobertaForSequenceClassification
 import torch
 import json
 import openai
@@ -17,13 +18,33 @@ dataset = 'provo_corpus'
 path = '/home/eilia/semantic_entropy/output/metrics/next_word_pred/random_context_including_metrics/eilia.8441792/'
 json_name = 'sequencesopt-30b_10_random_context_and_corrupted_samples_without_prompt_0-100_fact_check_llm_1_step_plausible_medium_classifier_including_metrics'
 
-with open(path + json_name + '.json') as f:
-    sequences = json.load(f)
-
 def process_generations(gen):
     gen = gen.split(' ')
     gen = [s for s in gen if s] #remove empty strings
     return gen[0]
+
+def check_prediction(predicted_support):
+    preds = []
+    for gen in predicted_support:
+        if ('true' in gen.lower()) and ('false' in gen.lower()):
+            preds.append('Not defined')
+        elif ('false' in gen.lower()):
+            preds.append(0)
+        elif ('true' in gen.lower()):
+            preds.append(1)
+        else:
+            preds.append('Not defined')
+
+    return preds
+
+def compute_probar(preds):
+    preds_clean = list(filter(lambda a: a != 'Not defined', preds))  #remove any non defined predictions
+    probar = sum(preds_clean)/len(preds_clean)
+
+    return probar
+
+with open(path + json_name + '.json') as f:
+    sequences = json.load(f)
 
 context = [item["question"] for item in sequences]
 generations = [item["cleaned_text"] for item in sequences]
@@ -39,7 +60,6 @@ for gens in generations:
 
 def check_for_adequacy_fact_check_llm_1_step(context, word,  model, tokenizer, openai_key):
     prompt = f"You are presented with a piece of text and a continuation. Generate True if the continuation is a plausible continuation to the context and False if it is not a plausible continuation. By plausible, I mean that when concatenating the continuation to the text, the text will remain grammatically correct and comprehensible. Text:'{context}' Continuation:'{word}' Answer:"
-    # prompt = f"You are presented with a passage, and a continuation to the passage. If the continuation is a word, generate True if it is a plausible continuation to the passage and False otherwise. If instead of a word, the continuation is a punctuation mark, generate True if it is plausible (i.e. the passage remains cohesive and comprehensive when adding that punctuation) and False otherwise. Only generate True or False. Passage:'{context}' Continuation:'{word}'."
 
     if openai_key == True:
         response = model.chat.completions.create(messages = [{"role": "user", "content" : prompt}], model="gpt-3.5-turbo",temperature = 0, top_p = 1, max_tokens = 200)
@@ -47,24 +67,18 @@ def check_for_adequacy_fact_check_llm_1_step(context, word,  model, tokenizer, o
         prediction = response.choices[0].message.content
         time.sleep(0.5)
     else:
-        # messages = [{"role": "user", "content": prompt}]
-        # encodeds = tokenizer.apply_chat_template(messages, return_tensors="pt")
         encodeds = tokenizer(prompt, return_tensors="pt")
         model_inputs = encodeds.to(device)
         model.to(device)
 
         generated_ids = model.generate(**model_inputs, max_new_tokens=100, do_sample=False)
-        # decoded = tokenizer.batch_decode(generated_ids)
         decoded = tokenizer.decode(generated_ids[0])
         prediction = decoded.replace(prompt, "")
     
     return prediction
-    # return decoded[0].replace(prompt, "")
 
 if openai_key == True:
-    # openai.organization = "insert_organization"
-    # openai.api_key = 
-    model_check = openai.OpenAI(api_key = '<OPEN_AI_API_KEY>')
+    model_check = openai.OpenAI(api_key = '<ADD_API_KEY>')
     tokenizer_check = None
 else:
     if size_classifier == 'x-large':
@@ -92,6 +106,8 @@ for i in range(len(context)):
         #map unique gens and their adequacy preds to initial gens
         dict_adeq = dict(zip(unique_gens, predicted_adeq))
         predicted_support = [dict_adeq[gen] for gen in gen_words[i]]
+        print('predicted_support',predicted_support)
+        print('greedy_gen_word', greedy_gen_word[i])
         predicted_adeq_greedy = check_for_adequacy_fact_check_llm_1_step(context[i], greedy_gen_word[i], model_check, tokenizer_check, openai_key)
         predicted_adeq_greedy = predicted_adeq_greedy.replace("<s> [INST]  [/INST]","").replace("<s>[INST][/INST]","").replace("</s>", "")
         print('predicted_adeq_greedy',predicted_adeq_greedy)
@@ -101,6 +117,12 @@ for i in range(len(context)):
     sequences[i][f'declarative_sentences_mistral_{size_classifier}_classifier'] = declarative_sentences
     sequences[i][f'predicted_plausible_mistral_{size_classifier}_classifier'] = predicted_support
     sequences[i][f'greedy_plausible_mistral_{size_classifier}_classifier'] = predicted_adeq_greedy
+
+    preds = check_prediction(predicted_support)
+    sequences[i]['probar_adequacy_predictions'] = preds
+
+    probar = compute_probar(preds)
+    sequences[i]['probar']
 
 with open(f'{json_name}_{adequacy_proxy}_{size_classifier}_classifier.json', 'w') as f:
     json.dump(sequences, f)
