@@ -1,3 +1,5 @@
+# Variability Need Not Imply Error: The Case of Adequate but Semantically Distinct Responses
+
 This Github Repository contains all code and generations to reproduce results found in the paper:
 
 [Variability Need Not Imply Error: The Case of Adequate but Semantically Distinct Responses]([https://arxiv.org/abs/2402.17527](https://arxiv.org/pdf/2412.15683))
