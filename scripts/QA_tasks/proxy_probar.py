@@ -7,12 +7,21 @@ device = "cuda" # the device to load the model onto
 
 adequacy_proxy = 'knowledge_fact_check_llm_1_step'
 # OPTIONS
-# 'NLI_llm_2_steps', 'NLI_hard', 'NLI_easy'
-# 'fact_check_llm_1_step' 'knowledge_fact_check_llm_1_step' 'fact_check_llm_1_step_chain_of_thought' 'fact_check_llm_1_step_plausible'
-# 'fact_check_llm_2_steps_wording_support' 'fact_check_llm_2_steps_wording_support_few_shot' 'fact_check_llm_2_steps_wording_not_contra'
+# 'NLI_llm_2_steps', 'NLI_hard', 'NLI_easy' 'fact_check_llm_1_step' 'knowledge_fact_check_llm_1_step' 
+# 'fact_check_llm_1_step_chain_of_thought' 'fact_check_llm_1_step_plausible' 'fact_check_llm_2_steps_wording_support' 
+# 'fact_check_llm_2_steps_wording_support_few_shot' 'fact_check_llm_2_steps_wording_not_contra'
+dataset = 'ambig_qa'
 size_classifier = 'large' # 'small' 'medium' 'large' 'x-large'
 
-dataset = 'ambig_qa'
+if size_classifier == 'x-large':
+    model_name = 'mistralai/Mixtral-8x7B-Instruct-v0.1' #46B parameters
+elif size_classifier == 'large':
+    model_name = 'mistralai/Mistral-Small-Instruct-2409' #22B parameters
+elif size_classifier == 'medium':
+    model_name = 'mistralai/Mistral-Nemo-Instruct-2407' #12B parameters
+else: #if not specified, use the smallest one
+    model_name = 'mistralai/Mistral-7B-Instruct-v0.2' #7B parameters
+
 
 path = '/home/eilia/semantic_entropy/output/sequences/ambig_qa/metrics/'
 json_name = 'sequencesopt-30b_10_samples_with_prompt_0-1070_including_sem_ent_entail'
@@ -31,6 +40,26 @@ elif dataset == 'ambig_qa':
 else:
     raise TypeError('Enter valid dataset')
 
+def check_prediction(predicted_support):
+    preds = []
+    for gen in predicted_support:
+        if ('true' in gen.lower()) and ('false' in gen.lower()):
+            preds.append('Not defined')
+        elif ('false' in gen.lower()):
+            preds.append(0)
+        elif ('true' in gen.lower()):
+            preds.append(1)
+        else:
+            preds.append('Not defined')
+
+    return preds
+
+def compute_probar(preds):
+    preds_clean = list(filter(lambda a: a != 'Not defined', preds))  #remove any non defined predictions
+    probar = sum(preds_clean)/len(preds_clean)
+
+    return probar
+
 def get_declarative_sentence(ambig_question, generation):
     #assertive vs declarative vs affirmative 
     prompt = f"Turn a question-answer pair to a declarative sentence. Only output the sentence and nothing else. Question: '{ambig_question}' Answer: '{generation}'"
@@ -45,16 +74,14 @@ def get_declarative_sentence(ambig_question, generation):
     return decoded[0].replace(prompt, "")
 
 def check_for_adequacy_nli(story, declarative_sentence):
-    # max_length = 256
     premise = story
     hypothesis = declarative_sentence
 
-    tokenized_input_seq_pair = tokenizer_nli.encode_plus(premise, hypothesis, #  max_length=max_length,
+    tokenized_input_seq_pair = tokenizer_nli.encode_plus(premise, hypothesis, 
                                                      return_token_type_ids=True, truncation=True)
 
     input_ids = torch.Tensor(tokenized_input_seq_pair['input_ids']).long().unsqueeze(0)
 
-    # remember bart doesn't have 'token_type_ids', remove the line below if you are using bart.
     token_type_ids = torch.Tensor(tokenized_input_seq_pair['token_type_ids']).long().unsqueeze(0)
     attention_mask = torch.Tensor(tokenized_input_seq_pair['attention_mask']).long().unsqueeze(0)
 
@@ -71,6 +98,31 @@ def check_for_adequacy_nli(story, declarative_sentence):
     predicted_probs = torch.softmax(outputs[0], dim=1)[0].tolist()  # batch_size only one
 
     return (predicted_probs, id2label)
+
+def check_for_adequacy_fact_verification(story, declarative_sentence):
+    # Load the tokenizer and model
+    tokenizer = RobertaTokenizer.from_pretrained('Dzeniks/roberta-fact-check')
+    model = RobertaForSequenceClassification.from_pretrained('Dzeniks/roberta-fact-check')
+
+    print(tokenizer.model_max_length)
+    # Define the claim with evidence to classify
+    claim = declarative_sentence
+    evidence = story
+
+    # Tokenize the claim with evidence
+    x = tokenizer.encode_plus(claim, evidence, return_tensors="pt")
+
+    print(x)
+    print(x['input_ids'].shape)
+    print(x['input_ids'].shape)
+    model.eval()
+    with torch.no_grad():
+        outputs = model(**x)
+
+    print(outputs)
+    # label = torch.argmax(outputs[0]).item()
+
+    return outputs[0]#, label
 
 def check_for_adequacy_fact_check_llm_1_step(story, question, answer):
     prompt = f"You are presented with a document, a question based on the document and an answer to the question. Generate True if the answer to the question is supported by the document and False if the answer to the question is not supported by the document. Only generate True or False. Document: '{story}' Question:'{question}' Answer:'{answer}'."
@@ -97,6 +149,8 @@ def check_for_adequacy_fact_check_llm_1_step_plausible(story, question, answer):
     return decoded[0].replace(prompt, "")
 
 def check_for_adequacy_fact_check_llm_1_step_chain_of_thought(story, question, answer):
+    # prompt = f"You are presented with a document, a question based on the document and an answer to the question. Generate True if the answer to the question is supported by the document and False if the answer to the question is not supported by the document. To reach an answer, generate your intermediate reasoning steps acnd at the end generate True or False. Document: '{story}' \nQuestion:'{question}' \nAnswer:'{answer}' \nReasoning:"
+    # prompt = f"You are presented with a document, a question based on the document and an answer to the question. Generate True if the answer to the question is supported by the document and False if the answer to the question is not supported by the document. Think step by step to reach an answer. Document: '{story}' \nQuestion:'{question}' \nAnswer:'{answer}' \nReasoning:"
     prompt = f"You are presented with a document, a question based on the document and an answer to the question. Generate True if the answer to the question is plausible given the document and False if the answer to the question is not plausible given the document. Generate your intermediate reasoning steps before generating your final answer. Document: '{story}' Question:'{question}' Answer:'{answer}' Reasoning:"
     messages = [{"role": "user", "content": prompt}]
     encodeds = tokenizer_fact_check.apply_chat_template(messages, return_tensors="pt")
@@ -168,41 +222,20 @@ def check_for_adequacy_nli_llm(premise, hypothesis, binary = True):
 
     return decoded[0].replace(prompt, "")
 
-
 if (adequacy_proxy == 'fact_check_llm_2_steps_wording_support') or (adequacy_proxy == 'fact_check_llm_2_steps_wording_support_few_shot') or (adequacy_proxy == 'fact_check_llm_2_steps_wording_not_contra'):
-    model_qa_declaration = AutoModelForCausalLM.from_pretrained("mistralai/Mistral-7B-Instruct-v0.2", use_cache=False, 
-                                            torch_dtype = torch.bfloat16, 
-                                            device_map="auto")
+    model_qa_declaration = AutoModelForCausalLM.from_pretrained("mistralai/Mistral-7B-Instruct-v0.2", use_cache=False, torch_dtype = torch.bfloat16, device_map="auto")
     tokenizer_qa_declaration = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-Instruct-v0.2")
-
-    model_fact_check = AutoModelForCausalLM.from_pretrained("mistralai/Mistral-7B-Instruct-v0.2", use_cache=False, 
-                                                torch_dtype = torch.bfloat16, 
-                                                device_map="auto")
-    tokenizer_fact_check = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-Instruct-v0.2")
-elif (adequacy_proxy == 'fact_check_llm_1_step') or (adequacy_proxy == 'fact_check_llm_1_step_plausible') or (adequacy_proxy == 'fact_check_llm_1_step_chain_of_thought') or (adequacy_proxy == 'knowledge_fact_check_llm_1_step'):
-    if size_classifier == 'x-large':
-        model_name = 'mistralai/Mixtral-8x7B-Instruct-v0.1' #46B parameters
-    elif size_classifier == 'large':
-        model_name = 'mistralai/Mistral-Small-Instruct-2409' #22B parameters
-    elif size_classifier == 'medium':
-        model_name = 'mistralai/Mistral-Nemo-Instruct-2407' #12B parameters
-    else: #if not specified, use the smallest one
-        model_name = 'mistralai/Mistral-7B-Instruct-v0.2' #7B parameters
 
     model_fact_check = AutoModelForCausalLM.from_pretrained(model_name, use_cache=False, 
                                                 torch_dtype = torch.bfloat16, 
                                                 device_map="auto")
     tokenizer_fact_check = AutoTokenizer.from_pretrained(model_name)
+elif (adequacy_proxy == 'fact_check_llm_1_step') or (adequacy_proxy == 'fact_check_llm_1_step_plausible') or (adequacy_proxy == 'fact_check_llm_1_step_chain_of_thought') or (adequacy_proxy == 'knowledge_fact_check_llm_1_step'):
+    model_fact_check = AutoModelForCausalLM.from_pretrained(model_name, use_cache=False, 
+                                                torch_dtype = torch.bfloat16, 
+                                                device_map="auto")
+    tokenizer_fact_check = AutoTokenizer.from_pretrained(model_name)
 elif adequacy_proxy == 'NLI_llm_2_steps':
-    if size_classifier == 'x-large':
-        model_name = 'mistralai/Mixtral-8x7B-Instruct-v0.1' #46B parameters
-    elif size_classifier == 'large':
-        model_name = 'mistralai/Mistral-Small-Instruct-2409' #22B parameters
-    elif size_classifier == 'medium':
-        model_name = 'mistralai/Mistral-Nemo-Instruct-2407' #12B parameters
-    else: #if not specified, use the smallest one
-        model_name = 'mistralai/Mistral-7B-Instruct-v0.2' #7B parameters
-
     model_qa_declaration = AutoModelForCausalLM.from_pretrained('mistralai/Mistral-7B-Instruct-v0.2', use_cache=False, 
                                             torch_dtype = torch.bfloat16, 
                                             device_map="auto")
@@ -264,6 +297,7 @@ for i in range(len(ambig_question)):
             predicted_support = [x.replace("<s> [INST]  [/INST]","").replace("</s>", "") for x in predicted_support]
         elif adequacy_proxy == 'fact_check_llm_2_steps_wording_support_few_shot':
             #from validation set of ABG-COQA
+            #question:"What was everyone doing?" (before or after the accident) #plausible answers: "riding a big wheel down the driveway into the street", ""We ran screaming and yelling for help and crying, and a neighbor called 911.""
             few_shot_example = "Document: 'The story of the day I lost my best friend to a car accident. The day a precious life was taken from us way too soon. \n\nIt was a bright and Sunny day in November. Thanksgiving had been celebrated only two days before. Since it was a holiday weekend I had been on the phone with Greg the night before many times. His dad didn't want him to come over because of the holiday. I guess he finally wore him down and he called and said, \"I can stay\". So, my mom, brother, and I went to pick him up. He was always smiling. The complete opposite of my shy self, Greg was always the life of the party. \n\nWe got two large pizzas that Friday night. I've never known anyone in my entire life who loved to eat more than Greg. That's the way he was though. He was just enjoying life. And if it meant gaining weight or whatever, so be it. He would sit back and put his hands on his belly and just laugh. We (Greg, David, and I) did so many funny things together and had such great times. Things we should have done and things we shouldn't have done, I'll \"Never\" forget. \n\nOn Saturday morning Dad took us out for breakfast. We all finished eating and followed my Dad up to the cashier. Greg asked Dad if he could have a candy bar. I looked at Greg shaking my head. He just laughed. After breakfast, Father took us to my Mom's house. \n\nWhen we got out at Mom's house there was no one home. So, one of us grabbed a big wheel and rode it down the steep driveway into the street. Just boys being boys. Greg and I did it several times until the last time. The car hit him on the head, knocking him around 75-- 100 yards. My brother and I both ran screaming just yelling for help and crying. One of the neighbors called 911. I was in shock. That day was forever etched into our memories. \n\nIt still hurts to think about it. Wishing we could have grown old together. Wondering how it would have been. I'm sure It WOULD HAVE BEEN GREAT.' Claim:'Everyone was running screaming and yelling for help and crying, and a neighbor called 911.' Prediction: True \n Document: 'The story of the day I lost my best friend to a car accident. The day a precious life was taken from us way too soon. \n\nIt was a bright and Sunny day in November. Thanksgiving had been celebrated only two days before. Since it was a holiday weekend I had been on the phone with Greg the night before many times. His dad didn't want him to come over because of the holiday. I guess he finally wore him down and he called and said, \"I can stay\". So, my mom, brother, and I went to pick him up. He was always smiling. The complete opposite of my shy self, Greg was always the life of the party. \n\nWe got two large pizzas that Friday night. I've never known anyone in my entire life who loved to eat more than Greg. That's the way he was though. He was just enjoying life. And if it meant gaining weight or whatever, so be it. He would sit back and put his hands on his belly and just laugh. We (Greg, David, and I) did so many funny things together and had such great times. Things we should have done and things we shouldn't have done, I'll \"Never\" forget. \n\nOn Saturday morning Dad took us out for breakfast. We all finished eating and followed my Dad up to the cashier. Greg asked Dad if he could have a candy bar. I looked at Greg shaking my head. He just laughed. After breakfast, Father took us to my Mom's house. \n\nWhen we got out at Mom's house there was no one home. So, one of us grabbed a big wheel and rode it down the steep driveway into the street. Just boys being boys. Greg and I did it several times until the last time. The car hit him on the head, knocking him around 75-- 100 yards. My brother and I both ran screaming just yelling for help and crying. One of the neighbors called 911. I was in shock. That day was forever etched into our memories. \n\nIt still hurts to think about it. Wishing we could have grown old together. Wondering how it would have been. I'm sure It WOULD HAVE BEEN GREAT.' Claim:'Nobody was yelling for help or crying.' Prediction: False"
             predicted_support = [check_for_adequacy_fact_check_llm(story[i], declarative_sent, few_shot_example) for declarative_sent in declarative_sentences]
             predicted_support = [x.replace("<s> [INST]  [/INST]","").replace("</s>", "") for x in predicted_support]
@@ -272,6 +306,13 @@ for i in range(len(ambig_question)):
 
     sequences[i][f'declarative_sentences_{size_classifier}_classifier'] = declarative_sentences
     sequences[i][f'predicted_support_{size_classifier}_classifier'] = predicted_support
+
+    preds = check_prediction(predicted_support)
+    sequences[i]['probar_adequacy_predictions'] = preds
+
+    probar = compute_probar(preds)
+    sequences[i]['probar']
+
 
 with open(f'{path}{json_name}_{adequacy_proxy}_{size_classifier}_classifier.json', 'w') as f:
     json.dump(sequences, f)
